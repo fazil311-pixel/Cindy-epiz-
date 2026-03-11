@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Fazil-faz</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        :root { --accent: #7c83fd; --bg: #ffffff; --chat-bg: #f3f4f9; --danger: #ff4d4d; }
+        body { margin: 0; background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+        /* Header */
+        .app-header { display: flex; align-items: center; padding: 10px 15px; border-bottom: 1px solid #eee; background: white; z-index: 100; }
+        .user-info { flex: 1; display: flex; align-items: center; }
+        .user-info img { width: 38px; height: 38px; border-radius: 50%; background: #ddd; margin-right: 12px; object-fit: cover; }
+        .user-info b { font-size: 16px; color: #333; }
+
+        /* Video Area */
+        .main-view { flex: 1; position: relative; background: #000; overflow: hidden; }
+        #friend { position: absolute; width: 100%; height: 100%; object-fit: cover; }
+        #me { width: 100px; height: 140px; position: absolute; top: 15px; right: 15px; border-radius: 12px; border: 2px solid white; z-index: 10; object-fit: cover; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+        .mirror { transform: scaleX(-1); }
+
+        /* Summary Screen Overlay */
+        #endScreen { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #000; display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 500; text-align: center; color: white; }
+        .end-avatar { width: 100px; height: 100px; border-radius: 50%; border: 3px solid var(--accent); margin-bottom: 20px; }
+        
+        /* Floating Controls */
+        .floating-controls { position: absolute; bottom: 20px; right: 15px; display: flex; flex-direction: column; gap: 15px; z-index: 20; }
+        .circle-btn { width: 48px; height: 48px; border-radius: 50%; background: rgba(255,255,255,0.2); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.3); color: white; font-size: 20px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+        .btn-hangup { background: var(--danger); }
+
+        /* Chat */
+        .chat-container { padding: 12px; background: white; border-top: 1px solid #eee; z-index: 100; }
+        #messagesList { max-height: 120px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-bottom: 10px; }
+        .bubble { align-self: flex-end; background: var(--accent); color: white; padding: 8px 15px; border-radius: 18px 18px 2px 18px; font-size: 14px; max-width: 75%; }
+        .bubble.friend { align-self: flex-start; background: var(--chat-bg); color: #333; border-radius: 18px 18px 18px 2px; }
+
+        .input-bar { display: flex; align-items: center; gap: 10px; background: #f1f3f8; padding: 6px 15px; border-radius: 25px; }
+        input { flex: 1; border: none; background: transparent; padding: 10px 0; outline: none; }
+    </style>
+</head>
+<body>
+
+    <div id="endScreen">
+        <img src="https://via.placeholder.com/150" class="end-avatar">
+        <h2 style="margin: 5px;">Call Ended</h2>
+        <p style="color: #888;">Thanks for using Fazil-faz</p>
+        <div id="finalTimer" style="font-size: 1.5rem; color: var(--accent); margin: 20px 0;">00:00</div>
+        <button onclick="location.reload()" style="padding: 12px 30px; border-radius: 25px; border: none; background: #333; color: white;">Restart</button>
+    </div>
+
+    <div class="app-header">
+        <div class="user-info">
+            <img src="https://via.placeholder.com/150">
+            <div><b>Fazil-faz</b><br><small style="color:#2ecc71;">● Online</small></div>
+        </div>
+        <div id="callTimer" style="font-family: monospace; font-weight: bold; color: #666;">00:00</div>
+    </div>
+
+    <div class="main-view">
+        <video id="friend" autoplay playsinline></video>
+        <video id="me" class="mirror" autoplay muted playsinline></video>
+        
+        <div class="floating-controls">
+            <button class="circle-btn" id="micBtn" onclick="toggleMute()">🎤</button>
+            <button class="circle-btn" onclick="switchCamera()">🔄</button>
+            <button class="circle-btn btn-hangup" onclick="endCall()">📞</button>
+        </div>
+    </div>
+
+    <div class="chat-container">
+        <div id="messagesList"></div>
+        <div class="input-bar">
+            <input type="text" id="msgInput" placeholder="Message...">
+            <button style="border:none; background:none; color:var(--accent); font-weight:bold;" onclick="sendText()">Send</button>
+        </div>
+    </div>
+
+    <script>
+        let peer, conn, myStream, currentFacingMode = 'user', isMuted = false, startTime, timerInt;
+        const room = new URLSearchParams(window.location.search).get('room') || "fazil-room";
+
+        async function startCamera(facingMode) {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facingMode }, audio: true });
+                myStream = stream;
+                document.getElementById('me').srcObject = myStream;
+                document.getElementById('me').classList.toggle('mirror', facingMode === 'user');
+                initPeer();
+            } catch (err) { alert("Camera Error"); }
+        }
+
+        function initPeer() {
+            peer = new Peer(room, { config: {'iceServers': [{ url: 'stun:stun.l.google.com:19302' }] } });
+            peer.on('open', () => {
+                if(window.location.search.includes('room=')) {
+                    const call = peer.call(room, myStream);
+                    call.on('stream', s => startConnection(s));
+                    setupChat(peer.connect(room));
+                }
+            });
+            peer.on('call', call => {
+                call.answer(myStream);
+                call.on('stream', s => startConnection(s));
+            });
+            peer.on('connection', c => setupChat(c));
+        }
+
+        function startConnection(s) {
+            document.getElementById('friend').srcObject = s;
+            if(!startTime) {
+                startTime = Date.now();
+                timerInt = setInterval(updateTimer, 1000);
+            }
+        }
+
+        function updateTimer() {
+            const diff = Math.floor((Date.now() - startTime) / 1000);
+            const m = Math.floor(diff / 60).toString().padStart(2, '0');
+            const s = (diff % 60).toString().padStart(2, '0');
+            const timeStr = `${m}:${s}`;
+            document.getElementById('callTimer').innerText = timeStr;
+            document.getElementById('finalTimer').innerText = timeStr;
+        }
+
+        function endCall() {
+            clearInterval(timerInt);
+            document.getElementById('endScreen').style.display = 'flex';
+            if(myStream) myStream.getTracks().forEach(t => t.stop());
+        }
+
+        function switchCamera() {
+            currentFacingMode = (currentFacingMode === 'user') ? 'environment' : 'user';
+            startCamera(currentFacingMode);
+        }
+
+        function toggleMute() {
+            isMuted = !isMuted;
+            myStream.getAudioTracks()[0].enabled = !isMuted;
+            document.getElementById('micBtn').innerText = isMuted ? "🔇" : "🎤";
+            document.getElementById('micBtn').style.background = isMuted ? "var(--danger)" : "rgba(255,255,255,0.2)";
+        }
+
+        function setupChat(c) {
+            conn = c;
+            conn.on('data', data => addBubble("friend", data));
+        }
+
+        function sendText() {
+            const val = document.getElementById('msgInput').value;
+            if(conn && val) {
+                conn.send(val);
+                addBubble("me", val);
+                document.getElementById('msgInput').value = "";
+            }
+        }
+
+        function addBubble(type, text) {
+            const div = document.createElement('div');
+            div.className = `bubble ${type}`;
+            div.innerText = text;
+            const list = document.getElementById('messagesList');
+            list.appendChild(div);
+            list.scrollTop = list.scrollHeight;
+        }
+
+        startCamera('user');
+    </script>
+</body>
+</html>
